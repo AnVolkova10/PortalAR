@@ -17,7 +17,6 @@ const PortalScene = ({ onEnterPortal }: PortalSceneProps) => {
     }
 
     const scene = new THREE.Scene()
-    scene.background = new THREE.Color('#030712')
 
     const camera = new THREE.PerspectiveCamera(
       60,
@@ -28,9 +27,10 @@ const PortalScene = ({ onEnterPortal }: PortalSceneProps) => {
     camera.position.set(0, 0.5, 4)
     camera.lookAt(0, 0, 0)
 
-    const renderer = new THREE.WebGLRenderer({ antialias: true })
+    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true })
     renderer.setSize(container.clientWidth, container.clientHeight)
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
+    renderer.setClearColor(0x000000, 0)
     container.appendChild(renderer.domElement)
     rendererRef.current = renderer
 
