@@ -1,11 +1,66 @@
 import { useEffect, useRef } from 'react'
 import * as THREE from 'three'
 
+type TrackingMode = 'ar' | 'fallback'
+
 type PortalSceneProps = {
   onEnterPortal?: () => void
+  onTrackingModeChange?: (mode: TrackingMode) => void
 }
 
-const PortalScene = ({ onEnterPortal }: PortalSceneProps) => {
+type ArToolkitSourceInstance = {
+  domElement: HTMLVideoElement
+  ready: boolean
+  init: (onReady: () => void, onError?: (error: Error) => void) => void
+  onResizeElement: () => void
+  copyElementSizeTo: (element: HTMLElement) => void
+  dispose: () => void
+}
+
+type ArToolkitContextInstance = {
+  arController: { canvas: HTMLCanvasElement } | null
+  init: (onCompleted: () => void) => void
+  getProjectionMatrix: () => THREE.Matrix4
+  update: (element: HTMLVideoElement) => void
+  dispose?: () => void
+}
+
+type ThreexModule = {
+  ArToolkitSource: new (config: Record<string, unknown>) => ArToolkitSourceInstance
+  ArToolkitContext: new (config: Record<string, unknown>) => ArToolkitContextInstance
+  ArMarkerControls: new (
+    context: ArToolkitContextInstance,
+    anchor: THREE.Group,
+    config: Record<string, unknown>,
+  ) => void
+}
+
+const ensureThreeOnGlobal = () => {
+  const globalObject = globalThis as typeof globalThis & { THREE?: typeof THREE }
+  if (!globalObject.THREE) {
+    globalObject.THREE = THREE
+  }
+}
+
+const loadArToolkitModule = (() => {
+  let loader: Promise<ThreexModule> | null = null
+  return () => {
+    if (!loader) {
+      loader = (async () => {
+        ensureThreeOnGlobal()
+        const module = await import('@ar-js-org/ar.js/three.js/build/ar-threex.js')
+        const candidate = ((module as { default?: unknown }).default ?? module) as Partial<ThreexModule>
+        if (!candidate.ArToolkitSource || !candidate.ArToolkitContext || !candidate.ArMarkerControls) {
+          throw new Error('AR.js module is missing expected exports (ArToolkitSource/Context/MarkerControls)')
+        }
+        return candidate as ThreexModule
+      })()
+    }
+    return loader
+  }
+})()
+
+const PortalScene = ({ onEnterPortal, onTrackingModeChange }: PortalSceneProps) => {
   const containerRef = useRef<HTMLDivElement | null>(null)
   const animationFrameRef = useRef<number | null>(null)
   const rendererRef = useRef<THREE.WebGLRenderer | null>(null)
@@ -16,7 +71,26 @@ const PortalScene = ({ onEnterPortal }: PortalSceneProps) => {
       return
     }
 
+    let currentTrackingMode: TrackingMode = 'fallback'
+    const updateTrackingMode = (mode: TrackingMode) => {
+      if (currentTrackingMode === mode) {
+        return
+      }
+      currentTrackingMode = mode
+      onTrackingModeChange?.(mode)
+    }
+
+    updateTrackingMode('fallback')
+
+    let arToolkitSource: ArToolkitSourceInstance | null = null
+    let arToolkitContext: ArToolkitContextInstance | null = null
+    let disposed = false
+
     const scene = new THREE.Scene()
+    const portalAnchor = new THREE.Group()
+    portalAnchor.matrixAutoUpdate = true
+    portalAnchor.position.set(0, 0, -3)
+    scene.add(portalAnchor)
 
     const createRectFrameGeometry = (
       outerWidth: number,
@@ -59,6 +133,12 @@ const PortalScene = ({ onEnterPortal }: PortalSceneProps) => {
     renderer.setSize(container.clientWidth, container.clientHeight)
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
     renderer.setClearColor(0x000000, 0)
+    renderer.domElement.style.position = 'absolute'
+    renderer.domElement.style.top = '0'
+    renderer.domElement.style.left = '0'
+    renderer.domElement.style.width = '100%'
+    renderer.domElement.style.height = '100%'
+    renderer.domElement.style.zIndex = '1'
     container.appendChild(renderer.domElement)
     rendererRef.current = renderer
 
@@ -192,8 +272,8 @@ const PortalScene = ({ onEnterPortal }: PortalSceneProps) => {
     })
     const portalSurface = new THREE.Mesh(portalSurfaceGeometry, portalSurfaceMaterial)
     portalSurface.name = 'portalEntryObject'
-    portalSurface.position.set(0, 0.35, -3)
-    scene.add(portalSurface)
+    portalSurface.position.set(0, portalHeight / 2, 0)
+    portalAnchor.add(portalSurface)
 
     const frameThickness = 0.18
     const portalFrameGeometry = createRectFrameGeometry(
@@ -211,7 +291,7 @@ const PortalScene = ({ onEnterPortal }: PortalSceneProps) => {
     const portalFrame = new THREE.Mesh(portalFrameGeometry, portalFrameMaterial)
     portalFrame.position.copy(portalSurface.position)
     portalFrame.rotation.y = Math.PI
-    scene.add(portalFrame)
+    portalAnchor.add(portalFrame)
 
     const raycaster = new THREE.Raycaster()
     const pointer = new THREE.Vector2()
@@ -233,23 +313,142 @@ const PortalScene = ({ onEnterPortal }: PortalSceneProps) => {
 
     container.addEventListener('pointerdown', handlePointerDown)
 
-    const resizeObserver = new ResizeObserver((entries) => {
-      for (const entry of entries) {
-        if (entry.target !== container) {
-          continue
-        }
-        const { width, height } = entry.contentRect
+    const handleResize = () => {
+      if (!container) {
+        return
+      }
+
+      if (!arToolkitSource || !arToolkitSource.ready) {
+        const width = container.clientWidth
+        const height = container.clientHeight
         if (!width || !height) {
           return
         }
+        renderer.setSize(width, height)
         camera.aspect = width / height
         camera.updateProjectionMatrix()
-        renderer.setSize(width, height)
+        return
       }
+
+      arToolkitSource.onResizeElement()
+      arToolkitSource.copyElementSizeTo(renderer.domElement)
+      if (arToolkitContext?.arController?.canvas) {
+        arToolkitSource.copyElementSizeTo(arToolkitContext.arController.canvas)
+      }
+    }
+
+    const resizeObserver = new ResizeObserver(() => {
+      handleResize()
     })
     resizeObserver.observe(container)
+    window.addEventListener('resize', handleResize)
+
+    const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
+
+    const setupMarkerTracking = async () => {
+      try {
+        const threexModule = await loadArToolkitModule()
+        if (disposed) {
+          return
+        }
+
+        const wasFallback = currentTrackingMode === 'fallback'
+        updateTrackingMode('ar')
+        if (wasFallback) {
+          // Give the CameraBackground hook a frame to release its MediaStream before AR.js requests it.
+          await wait(150)
+        }
+
+        const source = new threexModule.ArToolkitSource({
+          sourceType: 'webcam',
+          sourceParameters: {
+            facingMode: { ideal: 'environment' },
+          },
+        })
+        arToolkitSource = source
+
+        await new Promise<void>((resolve, reject) => {
+          source.init(
+            () => resolve(),
+            (error: Error) => reject(error),
+          )
+        })
+        if (disposed) {
+          return
+        }
+
+        const videoElement = source.domElement
+        videoElement.setAttribute('playsinline', 'true')
+        videoElement.style.position = 'absolute'
+        videoElement.style.top = '0'
+        videoElement.style.left = '0'
+        videoElement.style.width = '100%'
+        videoElement.style.height = '100%'
+        videoElement.style.objectFit = 'cover'
+        videoElement.style.zIndex = '0'
+        videoElement.muted = true
+        if (!videoElement.parentElement) {
+          container.prepend(videoElement)
+        }
+
+        const context = new threexModule.ArToolkitContext({
+          cameraParametersUrl: '/ar-data/camera_para.dat',
+          detectionMode: 'mono',
+          maxDetectionRate: 30,
+          canvasWidth: 1280,
+          canvasHeight: 720,
+        })
+        arToolkitContext = context
+
+        await new Promise<void>((resolve) => {
+          context.init(() => {
+            if (disposed) {
+              resolve()
+              return
+            }
+            camera.matrixAutoUpdate = false
+            camera.position.set(0, 0, 0)
+            camera.rotation.set(0, 0, 0)
+            camera.projectionMatrix.copy(context.getProjectionMatrix())
+            resolve()
+          })
+        })
+        if (disposed) {
+          return
+        }
+
+        portalAnchor.matrixAutoUpdate = false
+        portalAnchor.position.set(0, 0, 0)
+        portalAnchor.rotation.set(0, 0, 0)
+
+        new threexModule.ArMarkerControls(context, portalAnchor, {
+          type: 'pattern',
+          patternUrl: '/ar-data/patt.hiro',
+          size: 1,
+        })
+
+        handleResize()
+      } catch (error) {
+        console.error('Failed to initialize AR.js marker tracking', error)
+        if (arToolkitSource) {
+          const videoElement = arToolkitSource.domElement
+          if (videoElement?.parentElement) {
+            videoElement.parentElement.removeChild(videoElement)
+          }
+          arToolkitSource.dispose()
+          arToolkitSource = null
+        }
+        portalAnchor.matrixAutoUpdate = true
+        portalAnchor.position.set(0, 0, -3)
+        portalAnchor.rotation.set(0, 0, 0)
+        updateTrackingMode('fallback')
+      }
+    }
+
+    void setupMarkerTracking()
 
     renderer.render(scene, camera)
+    handleResize()
 
     const clock = new THREE.Clock()
 
@@ -287,6 +486,10 @@ const PortalScene = ({ onEnterPortal }: PortalSceneProps) => {
       renderer.render(portalWorldScene, portalWorldCamera)
       renderer.setRenderTarget(null)
 
+      if (arToolkitSource?.ready && arToolkitContext) {
+        arToolkitContext.update(arToolkitSource.domElement)
+      }
+
       renderer.render(scene, camera)
       animationFrameRef.current = requestAnimationFrame(animate)
     }
@@ -294,12 +497,27 @@ const PortalScene = ({ onEnterPortal }: PortalSceneProps) => {
     animationFrameRef.current = requestAnimationFrame(animate)
 
     return () => {
+      disposed = true
       if (animationFrameRef.current !== null) {
         cancelAnimationFrame(animationFrameRef.current)
       }
       container.removeEventListener('pointerdown', handlePointerDown)
+      window.removeEventListener('resize', handleResize)
       resizeObserver.disconnect()
 
+      if (arToolkitSource) {
+        const videoElement = arToolkitSource.domElement
+        if (videoElement?.parentElement) {
+          videoElement.parentElement.removeChild(videoElement)
+        }
+        arToolkitSource.dispose()
+        arToolkitSource = null
+      }
+
+      if (arToolkitContext) {
+        arToolkitContext.dispose?.()
+        arToolkitContext = null
+      }
       if (rendererRef.current) {
         container.removeChild(rendererRef.current.domElement)
         rendererRef.current.dispose()
@@ -307,6 +525,7 @@ const PortalScene = ({ onEnterPortal }: PortalSceneProps) => {
       }
 
       portalRenderTarget.dispose()
+      updateTrackingMode('fallback')
       centerpieceGeometry.dispose()
       centerpieceMaterial.dispose()
       groundGeometry.dispose()
@@ -326,7 +545,7 @@ const PortalScene = ({ onEnterPortal }: PortalSceneProps) => {
 
       scene.clear()
     }
-  }, [onEnterPortal])
+  }, [onEnterPortal, onTrackingModeChange])
 
   return (
     <div
@@ -336,6 +555,8 @@ const PortalScene = ({ onEnterPortal }: PortalSceneProps) => {
         width: '100%',
         height: '100%',
         minHeight: 0,
+        position: 'relative',
+        overflow: 'hidden',
       }}
     />
   )

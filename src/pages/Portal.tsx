@@ -1,19 +1,25 @@
-import { useCallback } from 'react'
+import { useCallback, useState } from 'react'
 import CameraBackground from '../components/CameraBackground'
 import PortalScene from '../components/PortalScene'
 import { theme } from '../theme'
 
 const Portal = () => {
+  const [cameraBackgroundDisabled, setCameraBackgroundDisabled] = useState(false)
+
   const handleEnterPortal = useCallback(() => {
     // Future AR/WebXR portal activation logic will live here once the session is wired up.
     console.log('CTA clicked inside 3D')
   }, [])
 
+  const handleTrackingModeChange = useCallback((mode: 'ar' | 'fallback') => {
+    setCameraBackgroundDisabled(mode === 'ar')
+  }, [])
+
   return (
     <div style={{ width: '100%', height: '100vh', backgroundColor: theme.colors.background, overflow: 'hidden' }}>
       <div style={{ position: 'relative', width: '100%', height: '100%' }}>
-        {/* Camera layer can later be replaced with an AR-composited background when WebXR is introduced. */}
-        <CameraBackground />
+        {/* Camera layer is active until AR.js successfully takes over the video feed inside the PortalScene. */}
+        <CameraBackground disabled={cameraBackgroundDisabled} />
 
         <div
           style={{
@@ -22,7 +28,7 @@ const Portal = () => {
             zIndex: 1,
           }}
         >
-          <PortalScene onEnterPortal={handleEnterPortal} />
+          <PortalScene onEnterPortal={handleEnterPortal} onTrackingModeChange={handleTrackingModeChange} />
         </div>
 
         <header

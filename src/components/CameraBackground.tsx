@@ -23,11 +23,23 @@ const fallbackStyles: CSSProperties = {
   zIndex: 1,
 }
 
-const CameraBackground = () => {
+type CameraBackgroundProps = {
+  disabled?: boolean
+}
+
+const CameraBackground = ({ disabled = false }: CameraBackgroundProps) => {
   const videoRef = useRef<HTMLVideoElement | null>(null)
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
+    if (disabled) {
+      if (videoRef.current) {
+        videoRef.current.srcObject = null
+      }
+      setError(null)
+      return
+    }
+
     let activeStream: MediaStream | null = null
 
     const enableCamera = async () => {
@@ -58,12 +70,22 @@ const CameraBackground = () => {
     return () => {
       activeStream?.getTracks().forEach((track) => track.stop())
     }
-  }, [])
+  }, [disabled])
 
   return (
     <div style={{ position: 'absolute', inset: 0, overflow: 'hidden' }}>
-      <video ref={videoRef} style={videoStyles} playsInline autoPlay muted />
-      {error && <div style={fallbackStyles}>{error}</div>}
+      <video
+        ref={videoRef}
+        style={{
+          ...videoStyles,
+          opacity: disabled ? 0 : 1,
+          pointerEvents: 'none',
+        }}
+        playsInline
+        autoPlay
+        muted
+      />
+      {!disabled && error && <div style={fallbackStyles}>{error}</div>}
     </div>
   )
 }
