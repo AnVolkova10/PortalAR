@@ -12,7 +12,8 @@ Web-based AR experience built with Vite + React + Three.js that lets you place a
 
 ```bash
 npm install
-npm run dev -- --host 0.0.0.0 --https
+npm run dev
+ngrok http 5173
 ```
 
 Expose the dev server (e.g. `ngrok http https://localhost:5173`) and open the HTTPS URL on your phone. Grant camera + motion permissions the first time.
