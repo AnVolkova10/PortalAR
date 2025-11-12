@@ -1,16 +1,12 @@
-import { useEffect, useRef } from 'react'
+﻿import { useEffect, useRef } from 'react'
 import * as THREE from 'three'
-
-type TrackingMode = 'ar' | 'fallback'
 
 type PortalSceneProps = {
   onEnterPortal?: () => void
-  onTrackingModeChange?: (mode: TrackingMode) => void
 }
 
-const PortalScene = ({ onEnterPortal, onTrackingModeChange }: PortalSceneProps) => {
+const PortalScene = ({ onEnterPortal }: PortalSceneProps) => {
   const containerRef = useRef<HTMLDivElement | null>(null)
-  const animationFrameRef = useRef<number | null>(null)
   const rendererRef = useRef<THREE.WebGLRenderer | null>(null)
 
   useEffect(() => {
@@ -26,6 +22,7 @@ const PortalScene = ({ onEnterPortal, onTrackingModeChange }: PortalSceneProps) 
     let xrSupported = false
     let xrStarting = false
     let portalLocked = false
+    let hasPlacementPose = false
 
     const lastHitMatrix = new THREE.Matrix4()
     const placementPosition = new THREE.Vector3()
@@ -34,53 +31,51 @@ const PortalScene = ({ onEnterPortal, onTrackingModeChange }: PortalSceneProps) 
     const cameraDirection = new THREE.Vector3()
     const tempEuler = new THREE.Euler()
 
-    let currentTrackingMode: TrackingMode = 'fallback'
-    const updateTrackingMode = (mode: TrackingMode) => {
-      if (currentTrackingMode === mode) {
-        return
-      }
-      currentTrackingMode = mode
-      onTrackingModeChange?.(mode)
-    }
-
-    updateTrackingMode('fallback')
-
     const arButton = document.createElement('button')
     arButton.type = 'button'
     arButton.textContent = 'Iniciar AR'
     Object.assign(arButton.style, {
-      position: 'absolute',
-      bottom: '1.5rem',
+      position: 'fixed',
+      bottom: '1.25rem',
       left: '50%',
       transform: 'translateX(-50%)',
-      padding: '0.85rem 1.75rem',
+      padding: '0.9rem 2rem',
       borderRadius: '999px',
       border: 'none',
-      fontSize: '0.95rem',
+      fontSize: '1rem',
       fontWeight: '600',
-      background: 'rgba(15, 23, 42, 0.8)',
+      background: 'rgba(15, 23, 42, 0.9)',
       color: '#fff',
-      letterSpacing: '0.05em',
-      backdropFilter: 'blur(8px)',
+      letterSpacing: '0.08em',
+      boxShadow: '0 10px 40px rgba(15, 23, 42, 0.45)',
+      backdropFilter: 'blur(12px)',
       cursor: 'pointer',
-      zIndex: '3',
+      zIndex: '999',
       display: 'none',
+      pointerEvents: 'auto',
     })
     container.appendChild(arButton)
 
-    const setArButtonVisibility = () => {
-      arButton.style.display = !xrSupported || xrSession || disposed ? 'none' : 'inline-flex'
+    const setArButtonState = () => {
+      if (disposed) {
+        arButton.style.display = 'none'
+        return
+      }
+      if (!xrSupported) {
+        arButton.style.display = 'inline-flex'
+        arButton.textContent = 'AR no disponible'
+        arButton.disabled = true
+        return
+      }
+      arButton.disabled = xrStarting
+      arButton.textContent = xrStarting ? 'Iniciando...' : 'Iniciar AR'
+      arButton.style.display = xrSession ? 'none' : 'inline-flex'
     }
-
-    arButton.addEventListener('click', (event) => {
-      event.stopPropagation()
-      void startWebXrSession()
-    })
 
     const scene = new THREE.Scene()
 
     const portalAnchor = new THREE.Group()
-    portalAnchor.position.set(0, 0, -3)
+    portalAnchor.visible = false
     scene.add(portalAnchor)
 
     const createRectFrameGeometry = (
@@ -290,35 +285,12 @@ const PortalScene = ({ onEnterPortal, onTrackingModeChange }: PortalSceneProps) 
     const reticleMaterial = new THREE.MeshBasicMaterial({
       color: 0x22d3ee,
       transparent: true,
-      opacity: 0.7,
+      opacity: 0.75,
     })
     const reticle = new THREE.Mesh(reticleGeometry, reticleMaterial)
     reticle.matrixAutoUpdate = false
     reticle.visible = false
     scene.add(reticle)
-
-    const raycaster = new THREE.Raycaster()
-    const pointer = new THREE.Vector2()
-
-    const updatePointer = (event: PointerEvent) => {
-      const rect = container.getBoundingClientRect()
-      pointer.x = ((event.clientX - rect.left) / rect.width) * 2 - 1
-      pointer.y = -((event.clientY - rect.top) / rect.height) * 2 + 1
-    }
-
-    const handlePointerDown = (event: PointerEvent) => {
-      if (xrSession || xrStarting) {
-        return
-      }
-      updatePointer(event)
-      raycaster.setFromCamera(pointer, camera)
-      const intersects = raycaster.intersectObject(portalSurface)
-      if (intersects.length > 0) {
-        onEnterPortal?.()
-      }
-    }
-
-    container.addEventListener('pointerdown', handlePointerDown)
 
     const resizeObserver = new ResizeObserver((entries) => {
       for (const entry of entries) {
@@ -326,14 +298,12 @@ const PortalScene = ({ onEnterPortal, onTrackingModeChange }: PortalSceneProps) 
           continue
         }
         const { width, height } = entry.contentRect
-        if (!width || !height) {
-          return
+        if (!width || !height || renderer.xr.isPresenting) {
+          continue
         }
-        if (!renderer.xr.isPresenting) {
-          renderer.setSize(width, height)
-          camera.aspect = width / height
-          camera.updateProjectionMatrix()
-        }
+        renderer.setSize(width, height)
+        camera.aspect = width / height
+        camera.updateProjectionMatrix()
       }
     })
     resizeObserver.observe(container)
@@ -375,28 +345,8 @@ const PortalScene = ({ onEnterPortal, onTrackingModeChange }: PortalSceneProps) 
       renderer.render(scene, camera)
     }
 
-    const startFallbackLoop = () => {
-      const animate = () => {
-        if (disposed || renderer.xr.isPresenting) {
-          return
-        }
-        const elapsed = clock.getElapsedTime()
-        renderPortalWorld(elapsed)
-        animationFrameRef.current = requestAnimationFrame(animate)
-      }
-      animationFrameRef.current = requestAnimationFrame(animate)
-    }
-
-    startFallbackLoop()
-
-    const stopFallbackLoop = () => {
-      if (animationFrameRef.current !== null) {
-        cancelAnimationFrame(animationFrameRef.current)
-        animationFrameRef.current = null
-      }
-    }
-
     const applyPlacement = () => {
+      portalAnchor.visible = true
       portalAnchor.position.copy(placementPosition)
       portalAnchor.position.y = Math.max(0, portalAnchor.position.y)
       const xrCamera = renderer.xr.getCamera()
@@ -409,27 +359,25 @@ const PortalScene = ({ onEnterPortal, onTrackingModeChange }: PortalSceneProps) 
     }
 
     const handleSessionEnd = () => {
-      hitTestSource?.cancel()
+      hitTestSource?.cancel?.()
       hitTestSource = null
       xrReferenceSpace = null
       xrSession = null
       renderer.setAnimationLoop(null)
       renderer.xr.enabled = false
       portalLocked = false
+      hasPlacementPose = false
+      portalAnchor.visible = false
       reticle.visible = false
-      updateTrackingMode('fallback')
-      setArButtonVisibility()
-      startFallbackLoop()
+      setArButtonState()
     }
 
     const startWebXrSession = async () => {
-      if (disposed || xrSession || xrStarting) {
-        return
-      }
-      if (!navigator.xr) {
+      if (disposed || xrSession || xrStarting || !navigator.xr) {
         return
       }
       xrStarting = true
+      setArButtonState()
       try {
         const session = await navigator.xr.requestSession('immersive-ar', {
           requiredFeatures: ['hit-test'],
@@ -437,25 +385,31 @@ const PortalScene = ({ onEnterPortal, onTrackingModeChange }: PortalSceneProps) 
           domOverlay: { root: container },
         })
         xrSession = session
-        updateTrackingMode('ar')
-        stopFallbackLoop()
+        portalLocked = false
+        hasPlacementPose = false
+        portalAnchor.visible = false
+        reticle.visible = false
         renderer.xr.enabled = true
         await renderer.xr.setSession(session)
         xrReferenceSpace = await session.requestReferenceSpace('local')
         const viewerSpace = await session.requestReferenceSpace('viewer')
         if (!session.requestHitTestSource) {
-          throw new Error('WebXR hit-test is not supported on this device/browser')
+          throw new Error('WebXR hit-test is not supported on this device')
         }
-        const newHitTestSource = await session.requestHitTestSource!({ space: viewerSpace })
+        const newHitTestSource = await session.requestHitTestSource({ space: viewerSpace })
         if (!newHitTestSource) {
-          throw new Error('WebXR hit-test source could not be created')
+          throw new Error('Unable to create hit-test source')
         }
         hitTestSource = newHitTestSource
 
         session.addEventListener('end', handleSessionEnd)
         session.addEventListener('select', () => {
-          if (!portalLocked && reticle.visible) {
+          if (!portalLocked && hasPlacementPose) {
             applyPlacement()
+            return
+          }
+          if (portalLocked) {
+            onEnterPortal?.()
           }
         })
 
@@ -465,57 +419,66 @@ const PortalScene = ({ onEnterPortal, onTrackingModeChange }: PortalSceneProps) 
             const results = frame.getHitTestResults(hitTestSource)
             if (results.length > 0) {
               const pose = results[0].getPose(xrReferenceSpace)
-              if (pose) {
+              if (pose && !portalLocked) {
                 lastHitMatrix.fromArray(pose.transform.matrix)
-                reticle.visible = !portalLocked
+                reticle.visible = true
                 reticle.matrix.copy(lastHitMatrix)
                 lastHitMatrix.decompose(placementPosition, placementQuaternion, placementScale)
+                hasPlacementPose = true
               }
-            } else {
+            } else if (!portalLocked) {
               reticle.visible = false
+              hasPlacementPose = false
             }
           }
           renderPortalWorld(elapsed)
         })
       } catch (error) {
         console.error('Failed to start WebXR session', error)
-        updateTrackingMode('fallback')
+        if (xrSession) {
+          xrSession.removeEventListener('end', handleSessionEnd)
+          xrSession.end().catch(() => undefined)
+        }
+        xrSession = null
       } finally {
         xrStarting = false
-        setArButtonVisibility()
+        setArButtonState()
       }
     }
+
+    arButton.addEventListener('click', (event) => {
+      event.stopPropagation()
+      void startWebXrSession()
+    })
 
     const checkXrSupport = async () => {
       if (!navigator.xr) {
         xrSupported = false
-        setArButtonVisibility()
+        setArButtonState()
         return
       }
       try {
         xrSupported = await navigator.xr.isSessionSupported('immersive-ar')
       } catch (error) {
-        console.warn('Unable to query WebXR support', error)
+        console.warn('Unable to verify WebXR support', error)
         xrSupported = false
       }
-      setArButtonVisibility()
+      setArButtonState()
     }
 
     void checkXrSupport()
 
     return () => {
       disposed = true
-      if (animationFrameRef.current !== null) {
-        cancelAnimationFrame(animationFrameRef.current)
-      }
       resizeObserver.disconnect()
-      container.removeEventListener('pointerdown', handlePointerDown)
       arButton.remove()
 
       if (xrSession) {
         xrSession.removeEventListener('end', handleSessionEnd)
         xrSession.end().catch(() => undefined)
       }
+
+      renderer.setAnimationLoop(null)
 
       if (rendererRef.current) {
         container.removeChild(rendererRef.current.domElement)
@@ -545,7 +508,7 @@ const PortalScene = ({ onEnterPortal, onTrackingModeChange }: PortalSceneProps) 
 
       scene.clear()
     }
-  }, [onEnterPortal, onTrackingModeChange])
+  }, [onEnterPortal])
 
   return (
     <div
@@ -554,7 +517,7 @@ const PortalScene = ({ onEnterPortal, onTrackingModeChange }: PortalSceneProps) 
         flex: 1,
         width: '100%',
         height: '100%',
-        minHeight: 0,
+        minHeight: '100%',
         position: 'relative',
         overflow: 'hidden',
       }}
