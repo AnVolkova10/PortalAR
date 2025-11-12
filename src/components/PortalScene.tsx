@@ -145,7 +145,10 @@ const PortalScene = ({ onEnterPortal }: PortalSceneProps) => {
     const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true })
     renderer.setSize(container.clientWidth, container.clientHeight)
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
-    renderer.setClearColor(0x000000, 0)
+    const baseClearColor = new THREE.Color(0x020617)
+    let clearAlpha = 0
+    let clearAlphaTarget = 0
+    renderer.setClearColor(baseClearColor, 0)
     renderer.domElement.style.position = 'absolute'
     renderer.domElement.style.inset = '0'
     renderer.domElement.style.width = '100%'
@@ -161,7 +164,11 @@ const PortalScene = ({ onEnterPortal }: PortalSceneProps) => {
     directionalLight.position.set(5, 5, 5)
     scene.add(directionalLight)
 
-    const portalRenderTarget = new THREE.WebGLRenderTarget(1024, 1024)
+    const portalWidth = 1.1
+    const portalHeight = 2.8
+    const portalAspect = portalWidth / portalHeight
+
+    const portalRenderTarget = new THREE.WebGLRenderTarget(1024, Math.round(1024 / portalAspect))
     portalRenderTarget.texture.colorSpace = THREE.SRGBColorSpace
 
     const portalWorldScene = new THREE.Scene()
@@ -174,7 +181,7 @@ const PortalScene = ({ onEnterPortal }: PortalSceneProps) => {
       return mirror as T
     }
 
-    const portalWorldCamera = new THREE.PerspectiveCamera(55, 1, 0.1, 50)
+    const portalWorldCamera = new THREE.PerspectiveCamera(55, portalAspect, 0.1, 50)
     portalWorldCamera.position.set(1.4, 1.1, 3)
     portalWorldCamera.lookAt(0, 0.4, 0)
 
@@ -277,9 +284,6 @@ const PortalScene = ({ onEnterPortal }: PortalSceneProps) => {
     }
     const orbGroupMirror = registerEnvironmentObject(orbGroup)
 
-    const portalWidth = 1.1
-    const portalHeight = 2.8
-
     const portalSurfaceGeometry = new THREE.PlaneGeometry(portalWidth, portalHeight)
     const portalSurfaceMaterial = new THREE.MeshStandardMaterial({
       map: portalRenderTarget.texture,
@@ -356,6 +360,7 @@ const PortalScene = ({ onEnterPortal }: PortalSceneProps) => {
       interiorEnvironment.visible = true
       occlusionOpacityTarget = 0.98
       occlusionDome.visible = true
+      clearAlphaTarget = 1
       onEnterPortal?.()
     }
 
@@ -368,6 +373,7 @@ const PortalScene = ({ onEnterPortal }: PortalSceneProps) => {
       interiorEnvironment.visible = false
       occlusionOpacityTarget = 0
       occlusionDome.visible = true
+      clearAlphaTarget = 0
       if (!hitTestSource) {
         void restoreHitTestSource()
       }
@@ -469,6 +475,9 @@ const PortalScene = ({ onEnterPortal }: PortalSceneProps) => {
       occlusionOpacityTarget = 0
       occlusionDomeMaterial.opacity = 0
       occlusionDome.visible = false
+      clearAlpha = 0
+      clearAlphaTarget = 0
+      renderer.setClearColor(baseClearColor, 0)
       setArButtonState()
     }
 
@@ -527,9 +536,18 @@ const PortalScene = ({ onEnterPortal }: PortalSceneProps) => {
           occlusionDomeMaterial.opacity += (occlusionOpacityTarget - occlusionDomeMaterial.opacity) * 0.08
           if (occlusionDomeMaterial.opacity <= 0.01 && occlusionOpacityTarget === 0) {
             occlusionDome.visible = false
+            occlusionDomeMaterial.transparent = true
           } else {
             occlusionDome.visible = true
+            if (occlusionDomeMaterial.opacity > 0.95 && occlusionOpacityTarget > 0.9) {
+              occlusionDomeMaterial.transparent = false
+              occlusionDomeMaterial.opacity = 1
+            } else {
+              occlusionDomeMaterial.transparent = true
+            }
           }
+          clearAlpha += (clearAlphaTarget - clearAlpha) * 0.08
+          renderer.setClearColor(baseClearColor, Math.min(1, Math.max(0, clearAlpha)))
 
           if (portalLocked) {
             portalAnchor.getWorldPosition(portalWorldPosition)
