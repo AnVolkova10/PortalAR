@@ -2,7 +2,9 @@ import { fileURLToPath, URL } from 'node:url'
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 
-const threePath = fileURLToPath(new URL('./node_modules/three', import.meta.url))
+const threePath = fileURLToPath(
+  new URL('./node_modules/three', import.meta.url)
+)
 
 // https://vite.dev/config/
 export default defineConfig({
@@ -20,6 +22,6 @@ export default defineConfig({
   },
   server: {
     host: true,
-    allowedHosts: ['225566fa6247.ngrok-free.app'],
+    allowedHosts: true,
   },
 })
