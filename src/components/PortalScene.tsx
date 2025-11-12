@@ -8,58 +8,6 @@ type PortalSceneProps = {
   onTrackingModeChange?: (mode: TrackingMode) => void
 }
 
-type ArToolkitSourceInstance = {
-  domElement: HTMLVideoElement
-  ready: boolean
-  init: (onReady: () => void, onError?: (error: Error) => void) => void
-  onResizeElement: () => void
-  copyElementSizeTo: (element: HTMLElement) => void
-  dispose: () => void
-}
-
-type ArToolkitContextInstance = {
-  arController: { canvas: HTMLCanvasElement } | null
-  init: (onCompleted: () => void) => void
-  getProjectionMatrix: () => THREE.Matrix4
-  update: (element: HTMLVideoElement) => void
-  dispose?: () => void
-}
-
-type ThreexModule = {
-  ArToolkitSource: new (config: Record<string, unknown>) => ArToolkitSourceInstance
-  ArToolkitContext: new (config: Record<string, unknown>) => ArToolkitContextInstance
-  ArMarkerControls: new (
-    context: ArToolkitContextInstance,
-    anchor: THREE.Group,
-    config: Record<string, unknown>,
-  ) => void
-}
-
-const ensureThreeOnGlobal = () => {
-  const globalObject = globalThis as typeof globalThis & { THREE?: typeof THREE }
-  if (!globalObject.THREE) {
-    globalObject.THREE = THREE
-  }
-}
-
-const loadArToolkitModule = (() => {
-  let loader: Promise<ThreexModule> | null = null
-  return () => {
-    if (!loader) {
-      loader = (async () => {
-        ensureThreeOnGlobal()
-        const module = await import('@ar-js-org/ar.js/three.js/build/ar-threex.js')
-        const candidate = ((module as { default?: unknown }).default ?? module) as Partial<ThreexModule>
-        if (!candidate.ArToolkitSource || !candidate.ArToolkitContext || !candidate.ArMarkerControls) {
-          throw new Error('AR.js module is missing expected exports (ArToolkitSource/Context/MarkerControls)')
-        }
-        return candidate as ThreexModule
-      })()
-    }
-    return loader
-  }
-})()
-
 const PortalScene = ({ onEnterPortal, onTrackingModeChange }: PortalSceneProps) => {
   const containerRef = useRef<HTMLDivElement | null>(null)
   const animationFrameRef = useRef<number | null>(null)
@@ -70,6 +18,21 @@ const PortalScene = ({ onEnterPortal, onTrackingModeChange }: PortalSceneProps) 
     if (!container) {
       return
     }
+
+    let disposed = false
+    let xrSession: XRSession | null = null
+    let xrReferenceSpace: XRReferenceSpace | null = null
+    let hitTestSource: XRHitTestSource | null = null
+    let xrSupported = false
+    let xrStarting = false
+    let portalLocked = false
+
+    const lastHitMatrix = new THREE.Matrix4()
+    const placementPosition = new THREE.Vector3()
+    const placementQuaternion = new THREE.Quaternion()
+    const placementScale = new THREE.Vector3()
+    const cameraDirection = new THREE.Vector3()
+    const tempEuler = new THREE.Euler()
 
     let currentTrackingMode: TrackingMode = 'fallback'
     const updateTrackingMode = (mode: TrackingMode) => {
@@ -82,13 +45,41 @@ const PortalScene = ({ onEnterPortal, onTrackingModeChange }: PortalSceneProps) 
 
     updateTrackingMode('fallback')
 
-    let arToolkitSource: ArToolkitSourceInstance | null = null
-    let arToolkitContext: ArToolkitContextInstance | null = null
-    let disposed = false
+    const arButton = document.createElement('button')
+    arButton.type = 'button'
+    arButton.textContent = 'Iniciar AR'
+    Object.assign(arButton.style, {
+      position: 'absolute',
+      bottom: '1.5rem',
+      left: '50%',
+      transform: 'translateX(-50%)',
+      padding: '0.85rem 1.75rem',
+      borderRadius: '999px',
+      border: 'none',
+      fontSize: '0.95rem',
+      fontWeight: '600',
+      background: 'rgba(15, 23, 42, 0.8)',
+      color: '#fff',
+      letterSpacing: '0.05em',
+      backdropFilter: 'blur(8px)',
+      cursor: 'pointer',
+      zIndex: '3',
+      display: 'none',
+    })
+    container.appendChild(arButton)
+
+    const setArButtonVisibility = () => {
+      arButton.style.display = !xrSupported || xrSession || disposed ? 'none' : 'inline-flex'
+    }
+
+    arButton.addEventListener('click', (event) => {
+      event.stopPropagation()
+      void startWebXrSession()
+    })
 
     const scene = new THREE.Scene()
+
     const portalAnchor = new THREE.Group()
-    portalAnchor.matrixAutoUpdate = true
     portalAnchor.position.set(0, 0, -3)
     scene.add(portalAnchor)
 
@@ -134,8 +125,7 @@ const PortalScene = ({ onEnterPortal, onTrackingModeChange }: PortalSceneProps) 
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
     renderer.setClearColor(0x000000, 0)
     renderer.domElement.style.position = 'absolute'
-    renderer.domElement.style.top = '0'
-    renderer.domElement.style.left = '0'
+    renderer.domElement.style.inset = '0'
     renderer.domElement.style.width = '100%'
     renderer.domElement.style.height = '100%'
     renderer.domElement.style.zIndex = '1'
@@ -206,32 +196,33 @@ const PortalScene = ({ onEnterPortal, onTrackingModeChange }: PortalSceneProps) 
       color: 0x93c5fd,
       transparent: true,
       opacity: 0.08,
-      metalness: 0,
-      roughness: 1,
       side: THREE.BackSide,
+      emissive: 0x1d4ed8,
+      emissiveIntensity: 0.15,
     })
     const nebula = new THREE.Mesh(nebulaGeometry, nebulaMaterial)
     portalWorldScene.add(nebula)
 
     const firefliesGeometry = new THREE.BufferGeometry()
-    const fireflyCount = 120
-    const fireflyPositions = new Float32Array(fireflyCount * 3)
-    for (let i = 0; i < fireflyCount; i += 1) {
+    const firefliesCount = 180
+    const fireflyPositions = new Float32Array(firefliesCount * 3)
+    const fireflySizes = new Float32Array(firefliesCount)
+    for (let i = 0; i < firefliesCount; i += 1) {
+      const radius = Math.random() * 3 + 0.5
       const angle = Math.random() * Math.PI * 2
-      const radius = 0.5 + Math.random() * 1.2
-      const height = 0.1 + Math.random() * 0.9
       fireflyPositions[i * 3] = Math.cos(angle) * radius
-      fireflyPositions[i * 3 + 1] = height
+      fireflyPositions[i * 3 + 1] = Math.random() * 1.2
       fireflyPositions[i * 3 + 2] = Math.sin(angle) * radius
+      fireflySizes[i] = Math.random() * 0.8 + 0.4
     }
     firefliesGeometry.setAttribute('position', new THREE.BufferAttribute(fireflyPositions, 3))
+    firefliesGeometry.setAttribute('aSize', new THREE.BufferAttribute(fireflySizes, 1))
     const firefliesMaterial = new THREE.PointsMaterial({
-      color: 0xbfdbfe,
-      size: 0.02,
+      color: 0x93c5fd,
+      size: 0.08,
       transparent: true,
-      opacity: 0.6,
+      opacity: 0.85,
       depthWrite: false,
-      blending: THREE.AdditiveBlending,
     })
     const fireflies = new THREE.Points(firefliesGeometry, firefliesMaterial)
     portalWorldScene.add(fireflies)
@@ -239,19 +230,18 @@ const PortalScene = ({ onEnterPortal, onTrackingModeChange }: PortalSceneProps) 
     const orbGeometry = new THREE.SphereGeometry(0.12, 16, 16)
     const orbMaterials: THREE.MeshStandardMaterial[] = []
     const orbGroup = new THREE.Group()
-    for (let i = 0; i < 3; i += 1) {
+    for (let i = 0; i < 6; i += 1) {
       const material = new THREE.MeshStandardMaterial({
-        color: new THREE.Color().setHSL(0.56 + i * 0.02, 0.5, 0.75),
-        emissive: 0x38bdf8,
-        emissiveIntensity: 0.25,
+        color: new THREE.Color().setHSL(0.55 + i * 0.05, 0.7, 0.6),
+        emissive: 0x1d4ed8,
+        emissiveIntensity: 0.6,
         metalness: 0.2,
-        roughness: 0.4,
+        roughness: 0.3,
       })
       const orb = new THREE.Mesh(orbGeometry, material)
-      orb.position.set(0, 0.3 + i * 0.12, 0)
-      orb.userData.radius = 0.7 + i * 0.25
-      orb.userData.speed = 0.18 + i * 0.05
-      orb.userData.height = 0.25 + i * 0.08
+      orb.userData.radius = 0.7 + i * 0.18
+      orb.userData.speed = 0.18 + i * 0.03
+      orb.userData.height = 0.25 + i * 0.06
       orbGroup.add(orb)
       orbMaterials.push(material)
     }
@@ -265,9 +255,9 @@ const PortalScene = ({ onEnterPortal, onTrackingModeChange }: PortalSceneProps) 
       map: portalRenderTarget.texture,
       color: 0xffffff,
       metalness: 0.1,
-      roughness: 0.25,
-      emissive: 0x2563eb,
-      emissiveIntensity: 0.3,
+      roughness: 0.7,
+      emissive: 0x0f172a,
+      emissiveIntensity: 0.5,
       side: THREE.DoubleSide,
     })
     const portalSurface = new THREE.Mesh(portalSurfaceGeometry, portalSurfaceMaterial)
@@ -285,13 +275,27 @@ const PortalScene = ({ onEnterPortal, onTrackingModeChange }: PortalSceneProps) 
     const portalFrameMaterial = new THREE.MeshStandardMaterial({
       color: 0x60a5fa,
       emissive: 0x1d4ed8,
-      emissiveIntensity: 0.9,
+      emissiveIntensity: 0.8,
+      metalness: 0.2,
+      roughness: 0.3,
       side: THREE.DoubleSide,
     })
     const portalFrame = new THREE.Mesh(portalFrameGeometry, portalFrameMaterial)
     portalFrame.position.copy(portalSurface.position)
     portalFrame.rotation.y = Math.PI
     portalAnchor.add(portalFrame)
+
+    const reticleGeometry = new THREE.RingGeometry(0.35, 0.4, 48)
+    reticleGeometry.rotateX(-Math.PI / 2)
+    const reticleMaterial = new THREE.MeshBasicMaterial({
+      color: 0x22d3ee,
+      transparent: true,
+      opacity: 0.7,
+    })
+    const reticle = new THREE.Mesh(reticleGeometry, reticleMaterial)
+    reticle.matrixAutoUpdate = false
+    reticle.visible = false
+    scene.add(reticle)
 
     const raycaster = new THREE.Raycaster()
     const pointer = new THREE.Vector2()
@@ -303,6 +307,9 @@ const PortalScene = ({ onEnterPortal, onTrackingModeChange }: PortalSceneProps) 
     }
 
     const handlePointerDown = (event: PointerEvent) => {
+      if (xrSession || xrStarting) {
+        return
+      }
       updatePointer(event)
       raycaster.setFromCamera(pointer, camera)
       const intersects = raycaster.intersectObject(portalSurface)
@@ -313,148 +320,27 @@ const PortalScene = ({ onEnterPortal, onTrackingModeChange }: PortalSceneProps) 
 
     container.addEventListener('pointerdown', handlePointerDown)
 
-    const handleResize = () => {
-      if (!container) {
-        return
-      }
-
-      if (!arToolkitSource || !arToolkitSource.ready) {
-        const width = container.clientWidth
-        const height = container.clientHeight
+    const resizeObserver = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        if (entry.target !== container) {
+          continue
+        }
+        const { width, height } = entry.contentRect
         if (!width || !height) {
           return
         }
-        renderer.setSize(width, height)
-        camera.aspect = width / height
-        camera.updateProjectionMatrix()
-        return
+        if (!renderer.xr.isPresenting) {
+          renderer.setSize(width, height)
+          camera.aspect = width / height
+          camera.updateProjectionMatrix()
+        }
       }
-
-      arToolkitSource.onResizeElement()
-      arToolkitSource.copyElementSizeTo(renderer.domElement)
-      if (arToolkitContext?.arController?.canvas) {
-        arToolkitSource.copyElementSizeTo(arToolkitContext.arController.canvas)
-      }
-    }
-
-    const resizeObserver = new ResizeObserver(() => {
-      handleResize()
     })
     resizeObserver.observe(container)
-    window.addEventListener('resize', handleResize)
-
-    const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
-
-    const setupMarkerTracking = async () => {
-      try {
-        const threexModule = await loadArToolkitModule()
-        if (disposed) {
-          return
-        }
-
-        const wasFallback = currentTrackingMode === 'fallback'
-        updateTrackingMode('ar')
-        if (wasFallback) {
-          // Give the CameraBackground hook a frame to release its MediaStream before AR.js requests it.
-          await wait(150)
-        }
-
-        const source = new threexModule.ArToolkitSource({
-          sourceType: 'webcam',
-          sourceParameters: {
-            facingMode: { ideal: 'environment' },
-          },
-        })
-        arToolkitSource = source
-
-        await new Promise<void>((resolve, reject) => {
-          source.init(
-            () => resolve(),
-            (error: Error) => reject(error),
-          )
-        })
-        if (disposed) {
-          return
-        }
-
-        const videoElement = source.domElement
-        videoElement.setAttribute('playsinline', 'true')
-        videoElement.style.position = 'absolute'
-        videoElement.style.top = '0'
-        videoElement.style.left = '0'
-        videoElement.style.width = '100%'
-        videoElement.style.height = '100%'
-        videoElement.style.objectFit = 'cover'
-        videoElement.style.zIndex = '0'
-        videoElement.muted = true
-        if (!videoElement.parentElement) {
-          container.prepend(videoElement)
-        }
-
-        const context = new threexModule.ArToolkitContext({
-          cameraParametersUrl: '/ar-data/camera_para.dat',
-          detectionMode: 'mono',
-          maxDetectionRate: 30,
-          canvasWidth: 1280,
-          canvasHeight: 720,
-        })
-        arToolkitContext = context
-
-        await new Promise<void>((resolve) => {
-          context.init(() => {
-            if (disposed) {
-              resolve()
-              return
-            }
-            camera.matrixAutoUpdate = false
-            camera.position.set(0, 0, 0)
-            camera.rotation.set(0, 0, 0)
-            camera.projectionMatrix.copy(context.getProjectionMatrix())
-            resolve()
-          })
-        })
-        if (disposed) {
-          return
-        }
-
-        portalAnchor.matrixAutoUpdate = false
-        portalAnchor.position.set(0, 0, 0)
-        portalAnchor.rotation.set(0, 0, 0)
-
-        new threexModule.ArMarkerControls(context, portalAnchor, {
-          type: 'pattern',
-          patternUrl: '/ar-data/patt.hiro',
-          size: 1,
-        })
-
-        handleResize()
-      } catch (error) {
-        console.error('Failed to initialize AR.js marker tracking', error)
-        if (arToolkitSource) {
-          const videoElement = arToolkitSource.domElement
-          if (videoElement?.parentElement) {
-            videoElement.parentElement.removeChild(videoElement)
-          }
-          arToolkitSource.dispose()
-          arToolkitSource = null
-        }
-        portalAnchor.matrixAutoUpdate = true
-        portalAnchor.position.set(0, 0, -3)
-        portalAnchor.rotation.set(0, 0, 0)
-        updateTrackingMode('fallback')
-      }
-    }
-
-    void setupMarkerTracking()
-
-    renderer.render(scene, camera)
-    handleResize()
 
     const clock = new THREE.Clock()
 
-    const animate = () => {
-      const elapsed = clock.getElapsedTime()
-
+    const renderPortalWorld = (elapsed: number) => {
       centerpiece.rotation.y += 0.004
       centerpiece.position.y = 0.55 + Math.sin(elapsed * 0.5) * 0.04
 
@@ -486,38 +372,144 @@ const PortalScene = ({ onEnterPortal, onTrackingModeChange }: PortalSceneProps) 
       renderer.render(portalWorldScene, portalWorldCamera)
       renderer.setRenderTarget(null)
 
-      if (arToolkitSource?.ready && arToolkitContext) {
-        arToolkitContext.update(arToolkitSource.domElement)
-      }
-
       renderer.render(scene, camera)
+    }
+
+    const startFallbackLoop = () => {
+      const animate = () => {
+        if (disposed || renderer.xr.isPresenting) {
+          return
+        }
+        const elapsed = clock.getElapsedTime()
+        renderPortalWorld(elapsed)
+        animationFrameRef.current = requestAnimationFrame(animate)
+      }
       animationFrameRef.current = requestAnimationFrame(animate)
     }
 
-    animationFrameRef.current = requestAnimationFrame(animate)
+    startFallbackLoop()
+
+    const stopFallbackLoop = () => {
+      if (animationFrameRef.current !== null) {
+        cancelAnimationFrame(animationFrameRef.current)
+        animationFrameRef.current = null
+      }
+    }
+
+    const applyPlacement = () => {
+      portalAnchor.position.copy(placementPosition)
+      portalAnchor.position.y = Math.max(0, portalAnchor.position.y)
+      const xrCamera = renderer.xr.getCamera(camera)
+      xrCamera.getWorldDirection(cameraDirection)
+      const yaw = Math.atan2(cameraDirection.x, cameraDirection.z)
+      tempEuler.set(0, yaw + Math.PI, 0)
+      portalAnchor.quaternion.setFromEuler(tempEuler)
+      portalLocked = true
+      reticle.visible = false
+    }
+
+    const handleSessionEnd = () => {
+      hitTestSource?.cancel()
+      hitTestSource = null
+      xrReferenceSpace = null
+      xrSession = null
+      renderer.setAnimationLoop(null)
+      renderer.xr.enabled = false
+      portalLocked = false
+      reticle.visible = false
+      updateTrackingMode('fallback')
+      setArButtonVisibility()
+      startFallbackLoop()
+    }
+
+    const startWebXrSession = async () => {
+      if (disposed || xrSession || xrStarting) {
+        return
+      }
+      if (!navigator.xr) {
+        return
+      }
+      xrStarting = true
+      try {
+        const session = await navigator.xr.requestSession('immersive-ar', {
+          requiredFeatures: ['hit-test'],
+          optionalFeatures: ['dom-overlay', 'local-floor'],
+          domOverlay: { root: container },
+        })
+        xrSession = session
+        updateTrackingMode('ar')
+        stopFallbackLoop()
+        renderer.xr.enabled = true
+        await renderer.xr.setSession(session)
+        xrReferenceSpace = await session.requestReferenceSpace('local')
+        const viewerSpace = await session.requestReferenceSpace('viewer')
+        hitTestSource = await session.requestHitTestSource({ space: viewerSpace })
+
+        session.addEventListener('end', handleSessionEnd)
+        session.addEventListener('select', () => {
+          if (!portalLocked && reticle.visible) {
+            applyPlacement()
+          }
+        })
+
+        renderer.setAnimationLoop((_, frame) => {
+          const elapsed = clock.getElapsedTime()
+          if (frame && hitTestSource && xrReferenceSpace) {
+            const results = frame.getHitTestResults(hitTestSource)
+            if (results.length > 0) {
+              const pose = results[0].getPose(xrReferenceSpace)
+              if (pose) {
+                lastHitMatrix.fromArray(pose.transform.matrix)
+                reticle.visible = !portalLocked
+                reticle.matrix.copy(lastHitMatrix)
+                lastHitMatrix.decompose(placementPosition, placementQuaternion, placementScale)
+              }
+            } else {
+              reticle.visible = false
+            }
+          }
+          renderPortalWorld(elapsed)
+        })
+      } catch (error) {
+        console.error('Failed to start WebXR session', error)
+        updateTrackingMode('fallback')
+      } finally {
+        xrStarting = false
+        setArButtonVisibility()
+      }
+    }
+
+    const checkXrSupport = async () => {
+      if (!navigator.xr) {
+        xrSupported = false
+        setArButtonVisibility()
+        return
+      }
+      try {
+        xrSupported = await navigator.xr.isSessionSupported('immersive-ar')
+      } catch (error) {
+        console.warn('Unable to query WebXR support', error)
+        xrSupported = false
+      }
+      setArButtonVisibility()
+    }
+
+    void checkXrSupport()
 
     return () => {
       disposed = true
       if (animationFrameRef.current !== null) {
         cancelAnimationFrame(animationFrameRef.current)
       }
-      container.removeEventListener('pointerdown', handlePointerDown)
-      window.removeEventListener('resize', handleResize)
       resizeObserver.disconnect()
+      container.removeEventListener('pointerdown', handlePointerDown)
+      arButton.remove()
 
-      if (arToolkitSource) {
-        const videoElement = arToolkitSource.domElement
-        if (videoElement?.parentElement) {
-          videoElement.parentElement.removeChild(videoElement)
-        }
-        arToolkitSource.dispose()
-        arToolkitSource = null
+      if (xrSession) {
+        xrSession.removeEventListener('end', handleSessionEnd)
+        xrSession.end().catch(() => undefined)
       }
 
-      if (arToolkitContext) {
-        arToolkitContext.dispose?.()
-        arToolkitContext = null
-      }
       if (rendererRef.current) {
         container.removeChild(rendererRef.current.domElement)
         rendererRef.current.dispose()
@@ -525,7 +517,6 @@ const PortalScene = ({ onEnterPortal, onTrackingModeChange }: PortalSceneProps) 
       }
 
       portalRenderTarget.dispose()
-      updateTrackingMode('fallback')
       centerpieceGeometry.dispose()
       centerpieceMaterial.dispose()
       groundGeometry.dispose()
@@ -542,6 +533,8 @@ const PortalScene = ({ onEnterPortal, onTrackingModeChange }: PortalSceneProps) 
       portalSurfaceMaterial.dispose()
       portalFrameGeometry.dispose()
       portalFrameMaterial.dispose()
+      reticleGeometry.dispose()
+      reticleMaterial.dispose()
 
       scene.clear()
     }
