@@ -399,7 +399,7 @@ const PortalScene = ({ onEnterPortal, onTrackingModeChange }: PortalSceneProps) 
     const applyPlacement = () => {
       portalAnchor.position.copy(placementPosition)
       portalAnchor.position.y = Math.max(0, portalAnchor.position.y)
-      const xrCamera = renderer.xr.getCamera(camera)
+      const xrCamera = renderer.xr.getCamera()
       xrCamera.getWorldDirection(cameraDirection)
       const yaw = Math.atan2(cameraDirection.x, cameraDirection.z)
       tempEuler.set(0, yaw + Math.PI, 0)
@@ -443,7 +443,14 @@ const PortalScene = ({ onEnterPortal, onTrackingModeChange }: PortalSceneProps) 
         await renderer.xr.setSession(session)
         xrReferenceSpace = await session.requestReferenceSpace('local')
         const viewerSpace = await session.requestReferenceSpace('viewer')
-        hitTestSource = await session.requestHitTestSource({ space: viewerSpace })
+        if (!session.requestHitTestSource) {
+          throw new Error('WebXR hit-test is not supported on this device/browser')
+        }
+        const newHitTestSource = await session.requestHitTestSource!({ space: viewerSpace })
+        if (!newHitTestSource) {
+          throw new Error('WebXR hit-test source could not be created')
+        }
+        hitTestSource = newHitTestSource
 
         session.addEventListener('end', handleSessionEnd)
         session.addEventListener('select', () => {
