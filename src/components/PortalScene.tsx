@@ -18,11 +18,13 @@ const PortalScene = ({ onEnterPortal }: PortalSceneProps) => {
     let disposed = false
     let xrSession: XRSession | null = null
     let xrReferenceSpace: XRReferenceSpace | null = null
+    let viewerReferenceSpace: XRReferenceSpace | null = null
     let hitTestSource: XRHitTestSource | null = null
     let xrSupported = false
     let xrStarting = false
     let portalLocked = false
     let hasPlacementPose = false
+    let insidePortal = false
 
     const lastHitMatrix = new THREE.Matrix4()
     const placementPosition = new THREE.Vector3()
@@ -30,6 +32,15 @@ const PortalScene = ({ onEnterPortal }: PortalSceneProps) => {
     const placementScale = new THREE.Vector3()
     const cameraDirection = new THREE.Vector3()
     const tempEuler = new THREE.Euler()
+    const portalForward = new THREE.Vector3(0, 0, -1)
+    const portalWorldPosition = new THREE.Vector3()
+    const cameraWorldPosition = new THREE.Vector3()
+    const tempVector = new THREE.Vector3()
+
+    const disposeHitTestSource = () => {
+      hitTestSource?.cancel?.()
+      hitTestSource = null
+    }
 
     const arButton = document.createElement('button')
     arButton.type = 'button'
@@ -74,9 +85,25 @@ const PortalScene = ({ onEnterPortal }: PortalSceneProps) => {
 
     const scene = new THREE.Scene()
 
+    const occlusionDomeMaterial = new THREE.MeshBasicMaterial({
+      color: 0x020617,
+      side: THREE.BackSide,
+      transparent: true,
+      opacity: 0,
+      depthWrite: false,
+    })
+    const occlusionDome = new THREE.Mesh(new THREE.SphereGeometry(25, 64, 64), occlusionDomeMaterial)
+    occlusionDome.visible = false
+    scene.add(occlusionDome)
+    let occlusionOpacityTarget = 0
+
     const portalAnchor = new THREE.Group()
     portalAnchor.visible = false
     scene.add(portalAnchor)
+
+    const interiorEnvironment = new THREE.Group()
+    interiorEnvironment.visible = false
+    portalAnchor.add(interiorEnvironment)
 
     const createRectFrameGeometry = (
       outerWidth: number,
@@ -140,16 +167,23 @@ const PortalScene = ({ onEnterPortal }: PortalSceneProps) => {
     const portalWorldScene = new THREE.Scene()
     portalWorldScene.background = new THREE.Color(0x050c1a)
 
+    const registerEnvironmentObject = <T extends THREE.Object3D>(object: T): T => {
+      portalWorldScene.add(object)
+      const mirror = object.clone(true)
+      interiorEnvironment.add(mirror)
+      return mirror as T
+    }
+
     const portalWorldCamera = new THREE.PerspectiveCamera(55, 1, 0.1, 50)
     portalWorldCamera.position.set(1.4, 1.1, 3)
     portalWorldCamera.lookAt(0, 0.4, 0)
 
     const portalWorldAmbient = new THREE.HemisphereLight(0xbfeafc, 0x06111f, 0.85)
-    portalWorldScene.add(portalWorldAmbient)
+    registerEnvironmentObject(portalWorldAmbient)
 
     const portalWorldLight = new THREE.DirectionalLight(0xbde0fe, 1.1)
     portalWorldLight.position.set(1.3, 1.8, 2.3)
-    portalWorldScene.add(portalWorldLight)
+    const portalWorldLightMirror = registerEnvironmentObject(portalWorldLight)
 
     const centerpieceGeometry = new THREE.SphereGeometry(0.55, 32, 32)
     const centerpieceMaterial = new THREE.MeshStandardMaterial({
@@ -161,7 +195,7 @@ const PortalScene = ({ onEnterPortal }: PortalSceneProps) => {
     })
     const centerpiece = new THREE.Mesh(centerpieceGeometry, centerpieceMaterial)
     centerpiece.position.set(0, 0.55, 0)
-    portalWorldScene.add(centerpiece)
+    const centerpieceMirror = registerEnvironmentObject(centerpiece)
 
     const groundGeometry = new THREE.CircleGeometry(3.5, 64)
     const groundMaterial = new THREE.MeshStandardMaterial({
@@ -172,7 +206,7 @@ const PortalScene = ({ onEnterPortal }: PortalSceneProps) => {
     const ground = new THREE.Mesh(groundGeometry, groundMaterial)
     ground.rotation.x = -Math.PI / 2
     ground.position.y = -0.02
-    portalWorldScene.add(ground)
+    registerEnvironmentObject(ground)
 
     const mistGeometry = new THREE.PlaneGeometry(4.5, 4.5)
     const mistMaterial = new THREE.MeshBasicMaterial({
@@ -184,7 +218,8 @@ const PortalScene = ({ onEnterPortal }: PortalSceneProps) => {
     const mist = new THREE.Mesh(mistGeometry, mistMaterial)
     mist.rotation.x = -Math.PI / 2
     mist.position.y = -0.015
-    portalWorldScene.add(mist)
+    const mistMirror = registerEnvironmentObject(mist)
+    const mistMirrorMaterial = mistMirror.material as THREE.MeshBasicMaterial
 
     const nebulaGeometry = new THREE.SphereGeometry(4, 48, 48)
     const nebulaMaterial = new THREE.MeshStandardMaterial({
@@ -196,7 +231,7 @@ const PortalScene = ({ onEnterPortal }: PortalSceneProps) => {
       emissiveIntensity: 0.15,
     })
     const nebula = new THREE.Mesh(nebulaGeometry, nebulaMaterial)
-    portalWorldScene.add(nebula)
+    const nebulaMirror = registerEnvironmentObject(nebula)
 
     const firefliesGeometry = new THREE.BufferGeometry()
     const firefliesCount = 180
@@ -220,7 +255,7 @@ const PortalScene = ({ onEnterPortal }: PortalSceneProps) => {
       depthWrite: false,
     })
     const fireflies = new THREE.Points(firefliesGeometry, firefliesMaterial)
-    portalWorldScene.add(fireflies)
+    const firefliesMirror = registerEnvironmentObject(fireflies)
 
     const orbGeometry = new THREE.SphereGeometry(0.12, 16, 16)
     const orbMaterials: THREE.MeshStandardMaterial[] = []
@@ -240,7 +275,7 @@ const PortalScene = ({ onEnterPortal }: PortalSceneProps) => {
       orbGroup.add(orb)
       orbMaterials.push(material)
     }
-    portalWorldScene.add(orbGroup)
+    const orbGroupMirror = registerEnvironmentObject(orbGroup)
 
     const portalWidth = 1.1
     const portalHeight = 2.8
@@ -280,6 +315,11 @@ const PortalScene = ({ onEnterPortal }: PortalSceneProps) => {
     portalFrame.rotation.y = Math.PI
     portalAnchor.add(portalFrame)
 
+    const setPortalVisibility = (visible: boolean) => {
+      portalSurface.visible = visible
+      portalFrame.visible = visible
+    }
+
     const reticleGeometry = new THREE.RingGeometry(0.35, 0.4, 48)
     reticleGeometry.rotateX(-Math.PI / 2)
     const reticleMaterial = new THREE.MeshBasicMaterial({
@@ -291,6 +331,47 @@ const PortalScene = ({ onEnterPortal }: PortalSceneProps) => {
     reticle.matrixAutoUpdate = false
     reticle.visible = false
     scene.add(reticle)
+
+    const restoreHitTestSource = async () => {
+      if (!xrSession || !viewerReferenceSpace || !xrSession.requestHitTestSource) {
+        return
+      }
+      const newSource = await xrSession.requestHitTestSource({ space: viewerReferenceSpace })
+      if (disposed) {
+        newSource?.cancel?.()
+        return
+      }
+      hitTestSource = newSource ?? null
+    }
+
+    const enterPortalInterior = () => {
+      if (insidePortal) {
+        return
+      }
+      insidePortal = true
+      disposeHitTestSource()
+      reticle.visible = false
+      hasPlacementPose = false
+      setPortalVisibility(false)
+      interiorEnvironment.visible = true
+      occlusionOpacityTarget = 0.98
+      occlusionDome.visible = true
+      onEnterPortal?.()
+    }
+
+    const exitPortalInterior = () => {
+      if (!insidePortal) {
+        return
+      }
+      insidePortal = false
+      setPortalVisibility(true)
+      interiorEnvironment.visible = false
+      occlusionOpacityTarget = 0
+      occlusionDome.visible = true
+      if (!hitTestSource) {
+        void restoreHitTestSource()
+      }
+    }
 
     const resizeObserver = new ResizeObserver((entries) => {
       for (const entry of entries) {
@@ -313,12 +394,18 @@ const PortalScene = ({ onEnterPortal }: PortalSceneProps) => {
     const renderPortalWorld = (elapsed: number) => {
       centerpiece.rotation.y += 0.004
       centerpiece.position.y = 0.55 + Math.sin(elapsed * 0.5) * 0.04
+      centerpieceMirror.rotation.copy(centerpiece.rotation)
+      centerpieceMirror.position.copy(centerpiece.position)
 
       mist.rotation.z = Math.sin(elapsed * 0.2) * 0.02
       mistMaterial.opacity = 0.1 + Math.sin(elapsed * 0.6) * 0.02
+      mistMirror.rotation.copy(mist.rotation)
+      mistMirrorMaterial.opacity = mistMaterial.opacity
 
       nebula.rotation.y += 0.0006
+      nebulaMirror.rotation.copy(nebula.rotation)
       fireflies.rotation.y += 0.0008
+      firefliesMirror.rotation.copy(fireflies.rotation)
 
       orbGroup.children.forEach((child, index) => {
         if (!(child instanceof THREE.Mesh)) {
@@ -330,9 +417,14 @@ const PortalScene = ({ onEnterPortal }: PortalSceneProps) => {
         child.position.x = Math.cos(elapsed * speed + index * 0.6) * radius
         child.position.z = Math.sin(elapsed * speed + index * 0.6) * radius
         child.position.y = 0.2 + height
+        const mirrorChild = orbGroupMirror.children[index] as THREE.Mesh | undefined
+        if (mirrorChild) {
+          mirrorChild.position.copy(child.position)
+        }
       })
 
       portalWorldLight.intensity = 1.05 + Math.sin(elapsed * 0.4) * 0.08
+      portalWorldLightMirror.intensity = portalWorldLight.intensity
 
       portalWorldCamera.position.x = 1.2 * Math.sin(elapsed * 0.25)
       portalWorldCamera.position.z = 2.8 + Math.cos(elapsed * 0.25)
@@ -354,21 +446,29 @@ const PortalScene = ({ onEnterPortal }: PortalSceneProps) => {
       const yaw = Math.atan2(cameraDirection.x, cameraDirection.z)
       tempEuler.set(0, yaw + Math.PI, 0)
       portalAnchor.quaternion.setFromEuler(tempEuler)
+      portalForward.set(0, 0, -1).applyQuaternion(portalAnchor.quaternion).normalize()
       portalLocked = true
       reticle.visible = false
+      setPortalVisibility(true)
     }
 
     const handleSessionEnd = () => {
-      hitTestSource?.cancel?.()
-      hitTestSource = null
+      disposeHitTestSource()
       xrReferenceSpace = null
+      viewerReferenceSpace = null
       xrSession = null
       renderer.setAnimationLoop(null)
       renderer.xr.enabled = false
       portalLocked = false
       hasPlacementPose = false
+      insidePortal = false
       portalAnchor.visible = false
+      interiorEnvironment.visible = false
+      setPortalVisibility(false)
       reticle.visible = false
+      occlusionOpacityTarget = 0
+      occlusionDomeMaterial.opacity = 0
+      occlusionDome.visible = false
       setArButtonState()
     }
 
@@ -387,16 +487,22 @@ const PortalScene = ({ onEnterPortal }: PortalSceneProps) => {
         xrSession = session
         portalLocked = false
         hasPlacementPose = false
+        insidePortal = false
         portalAnchor.visible = false
         reticle.visible = false
+        interiorEnvironment.visible = false
+        setPortalVisibility(false)
+        occlusionOpacityTarget = 0
+        occlusionDomeMaterial.opacity = 0
+        occlusionDome.visible = false
         renderer.xr.enabled = true
         await renderer.xr.setSession(session)
         xrReferenceSpace = await session.requestReferenceSpace('local')
-        const viewerSpace = await session.requestReferenceSpace('viewer')
+        viewerReferenceSpace = await session.requestReferenceSpace('viewer')
         if (!session.requestHitTestSource) {
           throw new Error('WebXR hit-test is not supported on this device')
         }
-        const newHitTestSource = await session.requestHitTestSource({ space: viewerSpace })
+        const newHitTestSource = await session.requestHitTestSource({ space: viewerReferenceSpace })
         if (!newHitTestSource) {
           throw new Error('Unable to create hit-test source')
         }
@@ -408,14 +514,34 @@ const PortalScene = ({ onEnterPortal }: PortalSceneProps) => {
             applyPlacement()
             return
           }
-          if (portalLocked) {
+          if (portalLocked && insidePortal) {
             onEnterPortal?.()
           }
         })
 
         renderer.setAnimationLoop((_, frame) => {
           const elapsed = clock.getElapsedTime()
-          if (frame && hitTestSource && xrReferenceSpace) {
+          const xrCamera = renderer.xr.getCamera()
+          xrCamera.getWorldPosition(cameraWorldPosition)
+          occlusionDome.position.copy(cameraWorldPosition)
+          occlusionDomeMaterial.opacity += (occlusionOpacityTarget - occlusionDomeMaterial.opacity) * 0.08
+          if (occlusionDomeMaterial.opacity <= 0.01 && occlusionOpacityTarget === 0) {
+            occlusionDome.visible = false
+          } else {
+            occlusionDome.visible = true
+          }
+
+          if (portalLocked) {
+            portalAnchor.getWorldPosition(portalWorldPosition)
+            const signedDistance = tempVector.copy(cameraWorldPosition).sub(portalWorldPosition).dot(portalForward)
+            if (!insidePortal && signedDistance > 0.25) {
+              enterPortalInterior()
+            } else if (insidePortal && signedDistance < -0.1) {
+              exitPortalInterior()
+            }
+          }
+
+          if (!insidePortal && frame && hitTestSource && xrReferenceSpace) {
             const results = frame.getHitTestResults(hitTestSource)
             if (results.length > 0) {
               const pose = results[0].getPose(xrReferenceSpace)
@@ -430,8 +556,13 @@ const PortalScene = ({ onEnterPortal }: PortalSceneProps) => {
               reticle.visible = false
               hasPlacementPose = false
             }
+          } else if (insidePortal) {
+            reticle.visible = false
+            hasPlacementPose = false
           }
+
           renderPortalWorld(elapsed)
+          interiorEnvironment.visible = insidePortal
         })
       } catch (error) {
         console.error('Failed to start WebXR session', error)
@@ -505,6 +636,8 @@ const PortalScene = ({ onEnterPortal }: PortalSceneProps) => {
       portalFrameMaterial.dispose()
       reticleGeometry.dispose()
       reticleMaterial.dispose()
+      occlusionDome.geometry.dispose()
+      occlusionDomeMaterial.dispose()
 
       scene.clear()
     }
