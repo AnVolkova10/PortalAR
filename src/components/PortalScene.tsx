@@ -242,8 +242,8 @@ const PortalScene = ({ onEnterPortal }: PortalSceneProps) => {
     }
     portalWorldScene.add(orbGroup)
 
-    const portalWidth = 1.7
-    const portalHeight = 2.4
+    const portalWidth = 1.1
+    const portalHeight = 2.8
 
     const portalSurfaceGeometry = new THREE.PlaneGeometry(portalWidth, portalHeight)
     const portalSurfaceMaterial = new THREE.MeshStandardMaterial({
