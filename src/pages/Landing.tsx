@@ -5,7 +5,7 @@ const Landing = () => {
   return (
     <main
       style={{
-        minHeight: '100vh',
+        minHeight: 'var(--viewport-height, 100vh)',
         display: 'flex',
         flexDirection: 'column',
         alignItems: 'center',

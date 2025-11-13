@@ -7,18 +7,21 @@ const Portal = () => {
     // Future AR/WebXR portal activation logic will live here once the session is wired up.
     console.log('CTA clicked inside 3D')
   }, [])
+  const viewportHeight = 'var(--viewport-height, 100vh)'
 
   return (
     <div
       style={{
         width: '100%',
-        height: '100svh',
-        minHeight: '100vh',
+        height: viewportHeight,
+        minHeight: viewportHeight,
         backgroundColor: theme.colors.background,
         overflow: 'hidden',
+        display: 'flex',
+        flexDirection: 'column',
       }}
     >
-      <div style={{ position: 'relative', width: '100%', height: '100%', minHeight: '100%' }}>
+      <div style={{ position: 'relative', width: '100%', flex: 1 }}>
         <PortalScene onEnterPortal={handleEnterPortal} />
 
         <header

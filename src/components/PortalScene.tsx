@@ -142,9 +142,25 @@ const PortalScene = ({ onEnterPortal }: PortalSceneProps) => {
     camera.position.set(0, 0.5, 4)
     camera.lookAt(0, 0, 0)
 
+    let portalWorldCamera!: THREE.PerspectiveCamera
     const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true })
-    renderer.setSize(container.clientWidth, container.clientHeight)
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
+    const updateRendererSize = () => {
+      const width = container.clientWidth
+      const height = container.clientHeight
+      if (!width || !height) {
+        return
+      }
+      const pixelRatio = Math.min(window.devicePixelRatio || 1, 2)
+      renderer.setPixelRatio(pixelRatio)
+      renderer.setSize(width, height, false)
+      camera.aspect = width / height
+      camera.updateProjectionMatrix()
+      if (portalWorldCamera) {
+        portalWorldCamera.aspect = camera.aspect
+        portalWorldCamera.updateProjectionMatrix()
+      }
+    }
+    updateRendererSize()
     const baseClearColor = new THREE.Color(0x020617)
     let clearAlpha = 0
     let clearAlphaTarget = 0
@@ -181,7 +197,7 @@ const PortalScene = ({ onEnterPortal }: PortalSceneProps) => {
       return mirror as T
     }
 
-    const portalWorldCamera = new THREE.PerspectiveCamera(55, portalAspect, 0.1, 50)
+    portalWorldCamera = new THREE.PerspectiveCamera(55, portalAspect, 0.1, 50)
     portalWorldCamera.position.set(1.4, 1.1, 3)
     portalWorldCamera.lookAt(0, 0.4, 0)
 
@@ -388,12 +404,19 @@ const PortalScene = ({ onEnterPortal }: PortalSceneProps) => {
         if (!width || !height || renderer.xr.isPresenting) {
           continue
         }
-        renderer.setSize(width, height)
-        camera.aspect = width / height
-        camera.updateProjectionMatrix()
+        updateRendererSize()
       }
     })
     resizeObserver.observe(container)
+
+    const handleViewportResize = () => {
+      if (!renderer.xr.isPresenting) {
+        updateRendererSize()
+      }
+    }
+    window.addEventListener('resize', handleViewportResize)
+    window.addEventListener('orientationchange', handleViewportResize)
+    window.visualViewport?.addEventListener('resize', handleViewportResize)
 
     const clock = new THREE.Clock()
 
@@ -485,6 +508,20 @@ const PortalScene = ({ onEnterPortal }: PortalSceneProps) => {
       if (disposed || xrSession || xrStarting || !navigator.xr) {
         return
       }
+      const root = container; // tu domOverlay root
+      Object.assign(root.style, {
+        position: 'fixed',
+        inset: '0',
+        width: '100vw',
+        height: 'var(--viewport-height, 100vh)',
+        background: 'transparent',
+        pointerEvents: 'auto',
+        zIndex: '999'           // para botones overlay
+      });
+
+      // asegurá que no haya fondos opacos heredados
+      document.documentElement.style.background = 'transparent';
+      document.body.style.background = 'transparent';
       xrStarting = true
       setArButtonState()
       try {
@@ -620,6 +657,9 @@ const PortalScene = ({ onEnterPortal }: PortalSceneProps) => {
     return () => {
       disposed = true
       resizeObserver.disconnect()
+      window.removeEventListener('resize', handleViewportResize)
+      window.removeEventListener('orientationchange', handleViewportResize)
+      window.visualViewport?.removeEventListener('resize', handleViewportResize)
       arButton.remove()
 
       if (xrSession) {
